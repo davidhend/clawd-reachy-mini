@@ -32,6 +32,7 @@ class AudioCapture:
         self._running = False
         self._buffer: deque[np.ndarray] = deque(maxlen=1000)
         self._device_id = None
+        self._muted = False
 
         # Find the specified audio device
         if config.audio_device:
@@ -72,6 +73,31 @@ class AudioCapture:
         self._close_input_stream()
         logger.info("Audio capture stopped")
 
+    def mute(self) -> None:
+        """Suspend capture so TTS playback is not picked up by the mic.
+
+        Closes the input stream and stops any Reachy-side recording. Subsequent
+        calls to capture_utterance will return None until unmute() is called.
+        """
+        if self._muted:
+            return
+        self._muted = True
+        self._close_input_stream()
+        if self.reachy and hasattr(self.reachy, "media"):
+            try:
+                self.reachy.media.stop_recording()
+            except Exception:
+                pass
+        logger.debug("🎙️ Mic muted (TTS playing)")
+
+    async def unmute(self, guard_seconds: float | None = None) -> None:
+        """Resume capture after a guard delay that lets the room go quiet."""
+        delay = self.config.post_speech_guard if guard_seconds is None else guard_seconds
+        if delay > 0:
+            await asyncio.sleep(delay)
+        self._muted = False
+        logger.debug(f"🎙️ Mic unmuted (after {delay:.2f}s guard)")
+
     async def capture_utterance(self) -> np.ndarray | None:
         """
         Capture a complete utterance (speech followed by silence).
@@ -80,6 +106,11 @@ class AudioCapture:
             Audio data as numpy array, or None if capture failed
         """
         if not self._running:
+            return None
+        if self._muted:
+            # Half-duplex: TTS is playing. Wait briefly so the conversation
+            # loop doesn't spin, then yield back to it.
+            await asyncio.sleep(0.05)
             return None
 
         frames: list[np.ndarray] = []

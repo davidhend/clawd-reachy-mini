@@ -40,6 +40,11 @@ class GatewayClient:
         self._register_event: asyncio.Event | None = None
         self._response_handlers: dict[str, asyncio.Future] = {}
         self._listener_task: asyncio.Task | None = None
+        self._tool_dispatcher: Callable[[str, dict], dict] | None = None
+
+    def register_tool_dispatcher(self, dispatcher: Callable[[str, dict], dict]) -> None:
+        """Register a sync callable that handles gateway-originated tool.request messages."""
+        self._tool_dispatcher = dispatcher
 
     @property
     def is_connected(self) -> bool:
@@ -340,7 +345,7 @@ class GatewayClient:
                 "method": "connect",
                 "params": {
                     "minProtocol": 3,
-                    "maxProtocol": 3,
+                    "maxProtocol": 4,
                     "client": {
                         "id": "gateway-client",  # Must be an allowed client ID
                         "version": "0.1.0",
@@ -348,6 +353,10 @@ class GatewayClient:
                         "mode": "backend",
                     },
                     "role": "operator",
+                    # Scopes are granted per-connection from this list; without
+                    # it the connection gets none and chat.send fails with
+                    # "missing scope: operator.write".
+                    "scopes": ["operator.read", "operator.write"],
                     "auth": {
                         "token": self.config.gateway_token or "",
                     },
@@ -438,14 +447,25 @@ class GatewayClient:
     async def _handle_tool_request(self, data: dict) -> None:
         """Handle tool execution requests from the Gateway."""
         tool_name = data.get("tool")
-        tool_args = data.get("arguments", {})
+        tool_args = data.get("arguments", {}) or {}
         request_id = data.get("id")
 
         logger.info(f"Tool request: {tool_name}({tool_args})")
 
-        # Tool execution will be handled by the main interface
-        # This is a placeholder - actual implementation connects to ReachyInterface
-        result = {"status": "error", "message": "Tool handler not registered"}
+        if self._tool_dispatcher is None:
+            result = {"status": "error", "message": "Tool handler not registered"}
+        elif not isinstance(tool_name, str) or not tool_name:
+            result = {"status": "error", "message": "Missing tool name"}
+        else:
+            try:
+                # Dispatchers are sync (motion calls block); run off the event loop
+                # so the websocket listener keeps draining messages.
+                result = await asyncio.to_thread(
+                    self._tool_dispatcher, tool_name, tool_args
+                )
+            except Exception as e:
+                logger.exception("Tool dispatcher raised")
+                result = {"status": "error", "message": str(e)}
 
         await self._send_raw({
             "type": "tool.response",

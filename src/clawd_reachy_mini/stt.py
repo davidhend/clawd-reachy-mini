@@ -70,8 +70,15 @@ class WhisperSTT(STTBackend):
 class FasterWhisperSTT(STTBackend):
     """Faster-Whisper for optimized local transcription."""
 
-    def __init__(self, model_name: str = "base"):
+    def __init__(
+        self,
+        model_name: str = "base",
+        language: str | None = None,
+        hotwords: str | None = None,
+    ):
         self.model_name = model_name
+        self.language = language
+        self.hotwords = hotwords
         self._model = None
 
     def preload(self) -> None:
@@ -93,13 +100,26 @@ class FasterWhisperSTT(STTBackend):
         if audio.max() > 1.0:
             audio = audio / 32768.0
 
-        segments, _ = model.transcribe(audio)
+        segments, _ = model.transcribe(audio, **self._transcribe_kwargs())
         return " ".join(segment.text for segment in segments).strip()
 
     def transcribe_file(self, path: Path) -> str:
         model = self._load_model()
-        segments, _ = model.transcribe(str(path))
+        segments, _ = model.transcribe(str(path), **self._transcribe_kwargs())
         return " ".join(segment.text for segment in segments).strip()
+
+    def _transcribe_kwargs(self) -> dict:
+        # vad_filter drops non-speech before decoding: ambient-noise captures
+        # return empty almost instantly instead of hallucinated text, and the
+        # capture loop (which is deaf while transcribing) re-arms sooner.
+        # condition_on_previous_text=False stops hallucinations from feeding
+        # on themselves across segments of one utterance.
+        return {
+            "language": self.language,
+            "hotwords": self.hotwords,
+            "vad_filter": True,
+            "condition_on_previous_text": False,
+        }
 
 
 class OpenAISTT(STTBackend):
@@ -157,8 +177,16 @@ def create_stt_backend(config: Config) -> STTBackend:
         logger.info(f"Using local Whisper STT (model: {config.whisper_model})")
         return WhisperSTT(model_name=config.whisper_model)
     elif backend == "faster-whisper":
-        logger.info(f"Using local Faster-Whisper STT (model: {config.whisper_model})")
-        return FasterWhisperSTT(model_name=config.whisper_model)
+        logger.info(
+            f"Using local Faster-Whisper STT (model: {config.whisper_model}, "
+            f"language: {config.whisper_language or 'auto'}, "
+            f"hotwords: {config.whisper_hotwords or 'none'})"
+        )
+        return FasterWhisperSTT(
+            model_name=config.whisper_model,
+            language=config.whisper_language,
+            hotwords=config.whisper_hotwords,
+        )
     elif backend == "openai":
         if not config.openai_api_key:
             raise ValueError("OpenAI API key required for OpenAI STT backend")

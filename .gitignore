@@ -23,7 +23,7 @@ wheels/
 # Virtual environments
 .venv/
 venv/
-ENV/
+/ENV/
 
 # IDE
 .idea/
@@ -46,3 +46,6 @@ captures/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code local settings
+.claude/settings.local.json

@@ -29,6 +29,9 @@ async def test_handle_connect_challenge_sends_connect_request():
     assert sent[0]["type"] == "req"
     assert sent[0]["method"] == "connect"
     assert sent[0]["params"]["auth"]["token"] == "secret-token"
+    # chat.send requires operator.write; the gateway only grants scopes that
+    # the connect request asks for.
+    assert "operator.write" in sent[0]["params"]["scopes"]
 
 
 @pytest.mark.asyncio

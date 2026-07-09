@@ -1,0 +1,27 @@
+[Unit]
+Description=SSH tunnel to OpenClaw gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=reachy
+EnvironmentFile=/etc/reachy-openclaw/tunnel.env
+ExecStart=/usr/bin/autossh -M 0 -N \
+    -o "ServerAliveInterval=30" \
+    -o "ServerAliveCountMax=3" \
+    -o "ExitOnForwardFailure=yes" \
+    -o "StrictHostKeyChecking=accept-new" \
+    -o "BatchMode=yes" \
+    -i ${SSH_KEY} \
+    -L ${LOCAL_PORT}:127.0.0.1:${REMOTE_PORT} \
+    ${REMOTE_USER}@${REMOTE_HOST}
+Restart=always
+RestartSec=5
+# autossh will exit-and-restart when forwarding fails; cap the loop in case of
+# misconfig so we don't hammer the remote.
+StartLimitInterval=60
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target

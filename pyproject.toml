@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Reachy Mini interface for OpenClaw - voice-based AI assistant channel"
 requires-python = ">=3.10"
 dependencies = [
-    "reachy-mini>=1.2.0",
+    # Pinned: the SDK shares the venv with reachy-mini-daemon. An unpinned bump
+    # desyncs the running daemon from the client (SDK/IPC protocol mismatch).
+    "reachy-mini==1.8.0",
     "websockets>=12.0",
     "openai-whisper>=20231117",
     "numpy>=1.24",
@@ -25,12 +27,19 @@ vision = [
 local-stt = [
     "faster-whisper>=1.0.0",
 ]
+tracking = [
+    # Face tracking in the camera service (YuNet via cv2.FaceDetectorYN).
+    # Install on the robot with --no-deps (numpy is already pinned there).
+    "opencv-python-headless>=4.8",
+]
 cloud-stt = [
     "openai>=1.0",
 ]
 
 [project.scripts]
 clawd-reachy = "clawd_reachy_mini.main:main"
+clawd-reachy-voice = "clawd_reachy_mini.voice:main"
+clawd-reachy-camera = "clawd_reachy_mini.camera:main"
 
 [build-system]
 requires = ["hatchling"]

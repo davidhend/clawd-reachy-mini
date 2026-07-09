@@ -1,0 +1,29 @@
+# Voice conversation loop: wake word -> mic -> STT -> OpenClaw -> spoken reply.
+# Replaces reachy-openclaw-bridge (which used the SDK/WebRTC media path). This
+# service never touches the SDK: it captures the mic via arecord after asking
+# the daemon to release media, and speaks via the daemon REST API.
+# Install: cp to /etc/systemd/system/, systemctl daemon-reload,
+#          systemctl enable --now reachy-voice
+
+[Unit]
+Description=Reachy Mini voice loop (wake word -> STT -> OpenClaw -> TTS)
+After=network-online.target reachy-daemon.service reachy-ssh-tunnel.service
+Wants=network-online.target
+Requires=reachy-daemon.service reachy-ssh-tunnel.service
+
+[Service]
+Type=simple
+User=reachy
+Group=reachy
+WorkingDirectory=/opt/reachy-openclaw
+# Reuses the old bridge's env file: LOCAL_PORT, OPENCLAW_TOKEN, STT_BACKEND,
+# WHISPER_MODEL, WAKE_WORD, REACHY_ELEVENLABS_API_KEY.
+EnvironmentFile=/etc/reachy-openclaw/bridge.env
+ExecStart=/opt/reachy-openclaw/.venv/bin/clawd-reachy-voice
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=120
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target

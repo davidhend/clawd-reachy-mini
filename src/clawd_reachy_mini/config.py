@@ -21,6 +21,8 @@ class Config:
     # Speech-to-text
     stt_backend: str = "whisper"  # "whisper", "faster-whisper", "openai"
     whisper_model: str = "base"  # "tiny", "base", "small", "medium", "large"
+    whisper_language: str | None = "en"  # None = autodetect per utterance
+    whisper_hotwords: str | None = None  # bias decoding toward these words (wake name)
     openai_api_key: str | None = None
 
     # Text-to-speech
@@ -32,9 +34,10 @@ class Config:
     silence_threshold: float = 0.01
     silence_duration: float = 1.5  # seconds of silence before processing
     max_recording_duration: float = 30.0  # max seconds per utterance
+    post_speech_guard: float = 0.4  # silence window after TTS before re-arming the mic
 
     # Behavior
-    wake_word: str | None = None  # None = always listening, or set e.g. "hey reachy"
+    wake_word: str | None = None  # None = always listening, or set e.g. "hey gizmo"
     play_emotions: bool = True  # React with emotions during conversation
     idle_animations: bool = True  # Play idle animations when waiting
     standalone_mode: bool = False  # Run without OpenClaw Gateway
@@ -63,5 +66,13 @@ def load_config() -> Config:
         gateway_port=int(os.environ.get("OPENCLAW_PORT", "18789")),
         stt_backend=os.environ.get("STT_BACKEND", "whisper"),
         whisper_model=os.environ.get("WHISPER_MODEL", "base"),
+        # WHISPER_LANGUAGE="" -> autodetect per utterance
+        whisper_language=os.environ.get("WHISPER_LANGUAGE", "en") or None,
+        whisper_hotwords=os.environ.get("WHISPER_HOTWORDS", "Gizmo") or None,
+        silence_threshold=float(os.environ.get("SILENCE_THRESHOLD", "0.01")),
         wake_word=os.environ.get("WAKE_WORD"),
+        # "default" | "gstreamer" | "no_media". Set REACHY_MEDIA_BACKEND=no_media
+        # to connect for motion only (skips the camera/audio media stream) — useful
+        # when the WebRTC media path is unavailable or misbehaving.
+        reachy_media_backend=os.environ.get("REACHY_MEDIA_BACKEND", "default"),
     )

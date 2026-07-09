@@ -1,31 +1,18 @@
 [project]
 name = "clawd-reachy-mini-skill"
 version = "0.1.0"
-description = "OpenClaw skill for Reachy Mini robot integration"
+description = "OpenClaw skill manifest for Reachy Mini robot integration"
 requires-python = ">=3.10"
-dependencies = [
-    "reachy-mini>=1.2.0",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-]
-vision = [
-    "reachy-mini[vision]",
-]
-audio = [
-    "reachy-mini[audio]",
-]
+# Tool calls are dispatched over the OpenClaw gateway to the bridge process on
+# the dedicated Reachy host, so this side ships only the skill manifest.
+dependencies = []
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/clawd_reachy_mini"]
+only-include = ["SKILL.md"]
 
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
+[tool.hatch.build.targets.wheel.sources]
+"" = "clawd_reachy_mini_skill"

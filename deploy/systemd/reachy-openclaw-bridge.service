@@ -1,0 +1,28 @@
+[Unit]
+Description=Reachy Mini <-> OpenClaw voice bridge
+After=network-online.target reachy-daemon.service reachy-ssh-tunnel.service
+Wants=network-online.target
+Requires=reachy-daemon.service reachy-ssh-tunnel.service
+
+[Service]
+Type=simple
+User=reachy
+Group=reachy
+WorkingDirectory=/opt/reachy-openclaw
+Environment="XDG_RUNTIME_DIR=/run/user/%U"
+EnvironmentFile=/etc/reachy-openclaw/bridge.env
+ExecStart=/opt/reachy-openclaw/.venv/bin/clawd-reachy \
+    --gateway-host 127.0.0.1 \
+    --gateway-port ${LOCAL_PORT} \
+    --reachy-mode localhost_only \
+    --stt ${STT_BACKEND} \
+    --whisper-model ${WHISPER_MODEL}
+# WAKE_WORD is read from the environment by config.py — passing it as a CLI
+# flag would split on whitespace ("hey reachy" → two argv tokens).
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=120
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target

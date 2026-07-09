@@ -1,0 +1,24 @@
+# On-demand camera capture: serves JPEG frames over HTTP (port 8089) for the
+# reachy_capture_image MCP tool on the OpenClaw box. Opens /dev/video0 only
+# during a capture; requires the daemon's media to be released (the voice
+# service keeps it that way, and this service releases it itself if needed).
+# Install: cp to /etc/systemd/system/, systemctl daemon-reload,
+#          systemctl enable --now reachy-camera
+
+[Unit]
+Description=Reachy Mini camera capture HTTP service (JPEG frames on demand)
+After=network-online.target reachy-daemon.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=reachy
+Group=reachy
+WorkingDirectory=/opt/reachy-openclaw
+Environment="REACHY_DAEMON_URL=http://127.0.0.1:8000"
+ExecStart=/opt/reachy-openclaw/.venv/bin/clawd-reachy-camera
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

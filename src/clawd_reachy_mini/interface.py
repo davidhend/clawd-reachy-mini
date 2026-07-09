@@ -69,26 +69,38 @@ class ReachyInterface:
         # Connect to Reachy Mini
         await self._connect_reachy()
 
-        # Initialize components
-        logger.info("🧠 Loading speech recognition model...")
-        self._stt = create_stt_backend(self.config)
-        await asyncio.to_thread(self._stt.preload)
-        logger.info("✅ Speech recognition ready")
+        # In no_media mode there is no mic/speaker stream, so skip STT + audio
+        # capture entirely and run motion/tool-only (driven by gateway tool calls).
+        self._media_enabled = self.config.reachy_media_backend != "no_media"
 
-        self._audio = AudioCapture(self.config, self._reachy)
+        if self._media_enabled:
+            # Initialize components
+            logger.info("🧠 Loading speech recognition model...")
+            self._stt = create_stt_backend(self.config)
+            await asyncio.to_thread(self._stt.preload)
+            logger.info("✅ Speech recognition ready")
 
-        if self.config.wake_word:
-            self._wake_detector = WakeWordDetector(self.config.wake_word)
+            self._audio = AudioCapture(self.config, self._reachy)
+
+            if self.config.wake_word:
+                self._wake_detector = WakeWordDetector(self.config.wake_word)
+        else:
+            logger.warning(
+                "REACHY_MEDIA_BACKEND=no_media — voice loop disabled; "
+                "running motion/tool-only (no mic, no speaker)."
+            )
 
         # Connect to OpenClaw Gateway (unless in standalone mode)
         if not self.config.standalone_mode:
             self._gateway = GatewayClient(self.config)
             await self._gateway.connect()
+            self._register_tool_dispatcher()
         else:
             logger.info("Running in standalone mode - no gateway connection")
 
         # Start audio capture
-        await self._audio.start()
+        if self._audio:
+            await self._audio.start()
 
         self._running = True
         self.state = InterfaceState.IDLE
@@ -151,8 +163,15 @@ class ReachyInterface:
             idle_task = asyncio.create_task(self._idle_animation_loop())
 
         try:
-            while self._running:
-                await self._conversation_turn()
+            if self._audio is None:
+                # Motion/tool-only mode (no_media): no voice loop. Stay alive so
+                # the gateway tool dispatcher keeps handling motion commands.
+                logger.info("🛠️ Tool-only mode — waiting for gateway commands (no voice).")
+                while self._running:
+                    await asyncio.sleep(1.0)
+            else:
+                while self._running:
+                    await self._conversation_turn()
 
         except asyncio.CancelledError:
             logger.info("Conversation loop cancelled")
@@ -268,31 +287,125 @@ class ReachyInterface:
         self.state = InterfaceState.IDLE
         logger.info("✅ Ready for next turn")
 
+    def _register_tool_dispatcher(self) -> None:
+        """Wire gateway-originated tool calls to the shared bridge."""
+        if not self._gateway or not self._reachy:
+            return
+        try:
+            from clawd_reachy_mini.actions.bridge import get_bridge
+            from clawd_reachy_mini.actions.tools import dispatch
+
+            bridge = get_bridge()
+            bridge.attach_existing(self._reachy)
+            bridge.set_speak_handler(self._make_tool_speak_handler())
+            self._gateway.register_tool_dispatcher(dispatch)
+            logger.info("Tool dispatcher registered (gateway → bridge)")
+        except Exception as e:
+            logger.warning(f"Could not register tool dispatcher: {e}")
+
+    def _make_tool_speak_handler(self):
+        """Build a blocking, thread-safe speak callable for the bridge.
+
+        Tool dispatch runs in a worker thread (gateway uses asyncio.to_thread),
+        so `reachy_say` must hop back onto this event loop to drive playback. We
+        block on the result and let exceptions propagate so the tool reports a
+        real status instead of a silent success.
+        """
+        loop = asyncio.get_running_loop()
+
+        def handler(text: str) -> None:
+            future = asyncio.run_coroutine_threadsafe(self._speak_for_tool(text), loop)
+            future.result()
+
+        return handler
+
     async def _connect_reachy(self) -> None:
-        """Connect to Reachy Mini robot."""
+        """Connect to Reachy Mini robot, retrying while the daemon comes up.
+
+        systemd only guarantees the daemon *process* has launched before the
+        bridge starts, not that it's *ready* (motors configured + uvicorn
+        listening takes a few seconds). A single attempt loses that race and
+        leaves the bridge running blind (no media, mic loop spinning). So retry
+        with backoff for ~a minute before giving up.
+        """
         try:
             from reachy_mini import ReachyMini
-
-            kwargs = {}
-            if self.config.reachy_connection_mode != "auto":
-                kwargs["connection_mode"] = self.config.reachy_connection_mode
-            if self.config.reachy_media_backend != "default":
-                kwargs["media_backend"] = self.config.reachy_media_backend
-
-            self._reachy = ReachyMini(**kwargs)
-            self._reachy.__enter__()
-
-            logger.info("Connected to Reachy Mini")
-
         except ImportError:
             logger.warning("reachy-mini not installed, running in simulation mode")
             self._reachy = None
-        except Exception as e:
-            logger.error(f"Failed to connect to Reachy Mini: {e}")
-            self._reachy = None
+            return
+
+        kwargs = {}
+        if self.config.reachy_connection_mode != "auto":
+            kwargs["connection_mode"] = self.config.reachy_connection_mode
+        if self.config.reachy_media_backend != "default":
+            kwargs["media_backend"] = self.config.reachy_media_backend
+
+        max_attempts = 20
+        retry_delay = 3.0
+        for attempt in range(1, max_attempts + 1):
+            try:
+                reachy = ReachyMini(**kwargs)
+                reachy.__enter__()
+                self._reachy = reachy
+                logger.info(f"Connected to Reachy Mini (attempt {attempt})")
+                return
+            except Exception as e:
+                self._reachy = None
+                if attempt < max_attempts:
+                    logger.warning(
+                        f"Reachy Mini not ready (attempt {attempt}/{max_attempts}): {e} "
+                        f"— retrying in {retry_delay:.0f}s"
+                    )
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logger.error(
+                        f"Failed to connect to Reachy Mini after {max_attempts} attempts: {e}. "
+                        "Running without robot (no motion/audio)."
+                    )
 
     async def _speak(self, text: str) -> None:
-        """Speak text through Reachy Mini using ElevenLabs TTS."""
+        """Speak text through Reachy Mini for conversational replies.
+
+        Never raises: TTS/playback failures are logged so the conversation loop
+        keeps running. Tool-triggered speech uses `_speak_for_tool`, which does
+        raise so the `reachy_say` tool can report a real error status.
+        """
+        if self._audio:
+            self._audio.mute()
+        try:
+            await self._tts_speak(text)
+        except ValueError as e:
+            logger.error(f"ElevenLabs TTS configuration error: {e}")
+            logger.info(
+                "Set REACHY_ELEVENLABS_API_KEY or ELEVENLABS_API_KEY to enable speech."
+            )
+            logger.info(f"[TTS] {text}")
+        except Exception as e:
+            logger.error(f"TTS failed: {e}")
+            logger.info(f"[TTS] {text}")
+        finally:
+            # Unmute after a guard window so room echo doesn't get captured.
+            if self._audio:
+                await self._audio.unmute()
+
+    async def _speak_for_tool(self, text: str) -> None:
+        """Speak on behalf of the `reachy_say` tool. Raises on failure.
+
+        Mutes the mic for the duration like the conversational path, but lets
+        exceptions propagate so the bridge can surface them to the agent instead
+        of silently reporting success.
+        """
+        if self._audio:
+            self._audio.mute()
+        try:
+            await self._tts_speak(text)
+        finally:
+            if self._audio:
+                await self._audio.unmute()
+
+    async def _tts_speak(self, text: str) -> None:
+        """Synthesize `text` with ElevenLabs and play it on Reachy. Raises on failure."""
 
         # Clean up markdown formatting for speech
         clean_text = text.replace("**", "").replace("*", "").replace("`", "")
@@ -310,33 +423,33 @@ class ReachyInterface:
 
             # Play through Reachy Mini if available
             if self._reachy and hasattr(self._reachy, "media"):
+                # Convert generated audio to 16k mono wav for Reachy
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wf:
+                    temp_wav_path = wf.name
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-i",
+                        temp_audio_path,
+                        "-ar",
+                        "16000",
+                        "-ac",
+                        "1",
+                        temp_wav_path,
+                    ],
+                    capture_output=True,
+                    check=True,
+                )
+
+                # Play the audio
+                import wave
+                with wave.open(temp_wav_path, "rb") as wf:
+                    audio_data = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+                    audio_float = audio_data.astype(np.float32) / 32768.0
+
+                self._reachy.media.start_playing()
                 try:
-                    # Convert generated audio to 16k mono wav for Reachy
-                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wf:
-                        temp_wav_path = wf.name
-                    subprocess.run(
-                        [
-                            "ffmpeg",
-                            "-y",
-                            "-i",
-                            temp_audio_path,
-                            "-ar",
-                            "16000",
-                            "-ac",
-                            "1",
-                            temp_wav_path,
-                        ],
-                        capture_output=True,
-                        check=True,
-                    )
-
-                    # Play the audio
-                    import wave
-                    with wave.open(temp_wav_path, "rb") as wf:
-                        audio_data = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
-                        audio_float = audio_data.astype(np.float32) / 32768.0
-
-                    self._reachy.media.start_playing()
                     # Push audio in chunks with proper timing
                     sample_rate = 16000
                     chunk_size = 1600  # 100ms chunks
@@ -365,23 +478,11 @@ class ReachyInterface:
                     logger.info("🗣️ Speech done, resetting head")
                     self._reachy.set_target_antenna_joint_positions([0.0, 0.0])
                     await asyncio.sleep(0.5)
+                finally:
                     self._reachy.media.stop_playing()
-                except Exception as e:
-                    logger.error(f"Reachy TTS playback failed: {e}")
-                    # Fallback: play locally
-                    subprocess.run(["afplay", temp_audio_path], capture_output=True)
             else:
                 # Fallback: play locally on Mac
                 subprocess.run(["afplay", temp_audio_path], capture_output=True)
-        except ValueError as e:
-            logger.error(f"ElevenLabs TTS configuration error: {e}")
-            logger.info(
-                "Set REACHY_ELEVENLABS_API_KEY or ELEVENLABS_API_KEY to enable speech."
-            )
-            logger.info(f"[TTS] {text}")
-        except Exception as e:
-            logger.error(f"TTS failed: {e}")
-            logger.info(f"[TTS] {text}")
         finally:
             for path in (temp_wav_path, temp_audio_path):
                 if path:

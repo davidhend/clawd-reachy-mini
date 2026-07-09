@@ -1,0 +1,23 @@
+[Unit]
+Description=Reachy Mini SDK daemon (motion + media)
+After=network.target sound.target
+Wants=sound.target
+
+[Service]
+Type=simple
+User=reachy
+Group=reachy
+# Audio over PipeWire/PulseAudio needs the user session bus. Run `loginctl
+# enable-linger reachy` once so this works without a logged-in shell.
+Environment="XDG_RUNTIME_DIR=/run/user/%U"
+EnvironmentFile=-/etc/reachy-openclaw/daemon.env
+ExecStart=/opt/reachy-openclaw/.venv/bin/reachy-mini-daemon --localhost-only --preload-datasets
+Restart=on-failure
+RestartSec=3
+# The daemon talks to the robot over USB; if the USB cable drops, let systemd
+# bring it back when the device returns.
+StartLimitInterval=120
+StartLimitBurst=20
+
+[Install]
+WantedBy=multi-user.target

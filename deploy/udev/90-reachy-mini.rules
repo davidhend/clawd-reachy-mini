@@ -1,0 +1,15 @@
+# USB permissions for Reachy Mini, per the SDK installation guide:
+# https://huggingface.co/docs/reachy_mini/SDK/installation
+#
+# 1a86:55d3 = CH340 USB-serial bridge (motor channel)
+# 38fb:1001 = Pollen Robotics USB composite (audio + camera)
+#
+# Reload after changing:
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# Audio device names are resolved by substring match in bridge.env
+# (REACHY_AUDIO_INPUT / REACHY_AUDIO_OUTPUT). Confirm what to put there by
+# running `arecord -L` / `aplay -L` once the robot is plugged in.
+
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", MODE="0666", GROUP="dialout"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="38fb", ATTRS{idProduct}=="1001", MODE="0666", GROUP="dialout"

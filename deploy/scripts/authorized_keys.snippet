@@ -1,0 +1,9 @@
+# Paste into the tunnel user's ~/.ssh/authorized_keys on the OpenClaw host.
+# Replace <PUBKEY> with the contents of /etc/reachy-openclaw/tunnel_key.pub
+# from the Reachy host.
+#
+# This restricts the key to one job: forwarding 127.0.0.1:18789. No shell,
+# no other ports. If the key leaks, the worst it can do is open a tunnel to
+# the gateway it could already reach from this network.
+
+restrict,port-forwarding,permitopen="127.0.0.1:18789",command="echo 'this key is for tunnels only';sleep 1" <PUBKEY>

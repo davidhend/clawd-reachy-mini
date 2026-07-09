@@ -2,7 +2,9 @@
 
 Voice interface that connects a Reachy Mini robot to OpenClaw over WebSocket.
 
-[![CI](https://github.com/ArturSkowronski/clawd-reachy-mini/actions/workflows/ci.yml/badge.svg)](https://github.com/ArturSkowronski/clawd-reachy-mini/actions/workflows/ci.yml)
+> Forked from [ArturSkowronski/clawd-reachy-mini](https://github.com/ArturSkowronski/clawd-reachy-mini), which provides the core voice-loop architecture (gateway protocol, audio capture, STT, ElevenLabs TTS). This fork adds a wake-word voice assistant loop, camera face tracking, an MCP server for typed robot control, an in-process actions bridge, and a full deployment stack (setup script, systemd units, udev rules, SSH tunnel).
+
+[![CI](https://github.com/davidhend/clawd-reachy-mini/actions/workflows/ci.yml/badge.svg)](https://github.com/davidhend/clawd-reachy-mini/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![Reachy Mini](https://img.shields.io/badge/robot-Reachy%20Mini-orange.svg)](https://www.pollen-robotics.com/reachy-mini/)
 
@@ -33,7 +35,7 @@ This project runs a conversation loop on a machine connected to Reachy Mini:
 ## Quickstart
 
 ```bash
-git clone https://github.com/ArturSkowronski/clawd-reachy-mini.git
+git clone https://github.com/davidhend/clawd-reachy-mini.git
 cd clawd-reachy-mini
 uv sync --extra dev --extra audio
 uv run clawd-reachy --gateway-host 127.0.0.1
@@ -147,6 +149,7 @@ uv run clawd-reachy \
 - `WHISPER_MODEL`: default Whisper model
 - `WAKE_WORD`: default wake word
 - `OPENCLAW_OPENAI_TOKEN` or `OPENAI_API_KEY`: used for `--stt openai`
+- `REACHY_ROLL_TRIM`: per-unit head roll calibration in radians (default `0.0`). Some units lean slightly at commanded roll 0 — if the head doesn't read as level, adjust in small steps (e.g. `-0.12` levels a unit that leans ~7° right).
 
 ElevenLabs TTS:
 - `REACHY_ELEVENLABS_API_KEY` or `ELEVENLABS_API_KEY` (required for speech)
@@ -192,3 +195,9 @@ uv run pytest
 ```
 
 GitHub Actions CI runs on Python 3.10 and 3.11.
+
+## Credits
+
+- Core voice-loop architecture by [Artur Skowronski](https://github.com/ArturSkowronski) ([upstream repo](https://github.com/ArturSkowronski/clawd-reachy-mini)).
+- Face detection uses [YuNet](https://github.com/opencv/opencv_zoo) (MIT) and object detection uses [NanoDet](https://github.com/RangiLyu/nanodet) (Apache-2.0) ONNX models.
+- Built for [Reachy Mini](https://www.pollen-robotics.com/reachy-mini/) by Pollen Robotics and [OpenClaw](https://openclaw.ai).
