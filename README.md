@@ -149,6 +149,8 @@ uv run clawd-reachy \
 - `WHISPER_MODEL`: default Whisper model
 - `WAKE_WORD`: default wake word
 - `OPENCLAW_OPENAI_TOKEN` or `OPENAI_API_KEY`: used for `--stt openai`
+- `OPENCLAW_REPLY_TIMEOUT`: seconds the voice loop waits for the agent's reply before saying it will follow up (default `120`). Long-running tasks aren't lost: the reply is spoken whenever the run finishes.
+- `STILL_WORKING_LINE`: what the robot says when a task outlives the reply timeout.
 - `REACHY_ROLL_TRIM`: per-unit head roll calibration in radians (default `0.0`). Some units lean slightly at commanded roll 0 — if the head doesn't read as level, adjust in small steps (e.g. `-0.12` levels a unit that leans ~7° right).
 
 ElevenLabs TTS:

@@ -29,7 +29,7 @@ import httpx
 import numpy as np
 
 from clawd_reachy_mini.config import Config, load_config
-from clawd_reachy_mini.gateway import GatewayClient
+from clawd_reachy_mini.gateway import GatewayClient, ReplyPending
 from clawd_reachy_mini.stt import create_stt_backend
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,13 @@ VOICE_TAG = os.environ.get("VOICE_MESSAGE_TAG", "[Gizmo voice]")
 THINKING_MOTION = os.environ.get("THINKING_MOTION", "true").strip().lower() not in {"false", "0", "no", "off"}
 THINKING_EMOTION = os.environ.get("THINKING_EMOTION", "").strip()
 EMOTIONS_DATASET = "pollen-robotics%2Freachy-mini-emotions-library"
+
+# Spoken when the agent is still working after the gateway reply timeout
+# (OPENCLAW_REPLY_TIMEOUT, default 120s). The real answer is announced by
+# _late_reply_announcer whenever the run eventually finishes.
+STILL_WORKING_LINE = os.environ.get(
+    "STILL_WORKING_LINE", "Still working on that. I'll let you know when it's done."
+)
 
 # Per-unit calibration: some units' heads lean at commanded roll 0 (e.g. one
 # test unit needed -0.12 rad to read as level). Set REACHY_ROLL_TRIM to suit.
@@ -432,6 +439,12 @@ class VoiceService:
         self.wake_session_s = float(os.environ.get("WAKE_SESSION_SECONDS", "45"))
         self._last_exchange = 0.0
         self._running = False
+        # Replies from runs that outlived the gateway wait (ReplyPending);
+        # drained by _late_reply_announcer.
+        self._late_replies: asyncio.Queue[str] = asyncio.Queue()
+        self.gateway.register_late_result_callback(self._late_replies.put)
+        # Serializes turn replies vs late announcements (both TTS + play).
+        self._speak_lock = asyncio.Lock()
 
     async def start(self) -> None:
         logger.info("🧠 Loading speech recognition model...")
@@ -462,6 +475,7 @@ class VoiceService:
     async def run(self) -> None:
         await self.start()
         watchdog = asyncio.create_task(self._media_watchdog())
+        announcer = asyncio.create_task(self._late_reply_announcer())
         try:
             while self._running:
                 try:
@@ -470,11 +484,23 @@ class VoiceService:
                     logger.exception("Error in conversation turn")
                     await asyncio.sleep(1.0)
         finally:
-            watchdog.cancel()
-            try:
-                await watchdog
-            except asyncio.CancelledError:
-                pass
+            for task in (watchdog, announcer):
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    async def _late_reply_announcer(self) -> None:
+        """Speak agent replies that finished after their turn stopped waiting."""
+        while True:
+            text = await self._late_replies.get()
+            logger.info(f'💬 Late reply: "{text[:200]}"')
+            asyncio.create_task(self.daemon.antenna_ack())
+            await self._speak(text)
+            # Open the follow-up window so the user can respond without the
+            # wake word, same as after an ordinary exchange.
+            self._last_exchange = time.monotonic()
 
     async def _media_watchdog(self) -> None:
         """Re-release media if the daemon restarts and takes the mic back."""
@@ -531,6 +557,10 @@ class VoiceService:
             thinking = asyncio.create_task(self.daemon.head_thinking(stop_thinking))
         try:
             reply = await self.gateway.send_message(f"{VOICE_TAG} {text}")
+        except ReplyPending:
+            # Agent is still working; _late_reply_announcer speaks the result
+            # when the run finishes.
+            reply = STILL_WORKING_LINE
         finally:
             stop_thinking.set()
             if thinking is not None:
@@ -598,20 +628,21 @@ class VoiceService:
         if not clean.strip():
             logger.info("Reply has no speakable text (emoji only?) — skipping TTS")
             return
-        self.capture.muted = True
-        try:
-            logger.info("☁️ Generating speech with ElevenLabs...")
-            wav = await elevenlabs_wav(clean)
-            # No tracker pause here: the daemon's speech bob (see
-            # enable_wobbling) composes its offsets on top of the target pose,
-            # so it animates on top of face tracking rather than fighting it.
-            duration = await self.daemon.play_wav(wav)
-            logger.info(f"🔊 Playing reply ({duration:.1f}s)")
-            await asyncio.sleep(duration + self.config.post_speech_guard)
-        except Exception as e:
-            logger.error(f"TTS/playback failed: {e}")
-        finally:
-            self.capture.muted = False
+        async with self._speak_lock:
+            self.capture.muted = True
+            try:
+                logger.info("☁️ Generating speech with ElevenLabs...")
+                wav = await elevenlabs_wav(clean)
+                # No tracker pause here: the daemon's speech bob (see
+                # enable_wobbling) composes its offsets on top of the target pose,
+                # so it animates on top of face tracking rather than fighting it.
+                duration = await self.daemon.play_wav(wav)
+                logger.info(f"🔊 Playing reply ({duration:.1f}s)")
+                await asyncio.sleep(duration + self.config.post_speech_guard)
+            except Exception as e:
+                logger.error(f"TTS/playback failed: {e}")
+            finally:
+                self.capture.muted = False
 
 
 async def async_main(config: Config) -> int:

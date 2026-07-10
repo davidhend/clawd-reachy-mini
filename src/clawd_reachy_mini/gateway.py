@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
 from dataclasses import dataclass
-from typing import AsyncIterator, Callable
+from typing import AsyncIterator, Awaitable, Callable
 
 import websockets
 from websockets.client import WebSocketClientProtocol
@@ -15,6 +16,15 @@ from websockets.client import WebSocketClientProtocol
 from clawd_reachy_mini.config import Config
 
 logger = logging.getLogger(__name__)
+
+# How long send_message waits for the agent's final reply. Runs that outlive
+# this are NOT abandoned: send_message raises ReplyPending and the reply is
+# delivered through the late-result callback when the run finishes.
+REPLY_TIMEOUT_S = float(os.environ.get("OPENCLAW_REPLY_TIMEOUT", "120"))
+
+
+class ReplyPending(TimeoutError):
+    """The agent is still working; the reply will arrive via the late-result callback."""
 
 
 @dataclass
@@ -41,10 +51,16 @@ class GatewayClient:
         self._response_handlers: dict[str, asyncio.Future] = {}
         self._listener_task: asyncio.Task | None = None
         self._tool_dispatcher: Callable[[str, dict], dict] | None = None
+        self._late_result_cb: Callable[[str], Awaitable[None]] | None = None
 
     def register_tool_dispatcher(self, dispatcher: Callable[[str, dict], dict]) -> None:
         """Register a sync callable that handles gateway-originated tool.request messages."""
         self._tool_dispatcher = dispatcher
+
+    def register_late_result_callback(self, callback: Callable[[str], Awaitable[None]]) -> None:
+        """Register a coroutine function that receives the final text of runs
+        whose send_message call already timed out (see ReplyPending)."""
+        self._late_result_cb = callback
 
     @property
     def is_connected(self) -> bool:
@@ -145,9 +161,14 @@ class GatewayClient:
         await self._send_raw(request)
 
         run_id = None
+        run_still_pending = False
         try:
             # Wait for initial response with runId
-            init_response = await asyncio.wait_for(init_future, timeout=30.0)
+            try:
+                init_response = await asyncio.wait_for(init_future, timeout=30.0)
+            except asyncio.TimeoutError:
+                logger.error("Timeout waiting for Gateway to accept chat.send")
+                raise
             run_id = init_response.get("runId")
 
             if not run_id:
@@ -164,15 +185,25 @@ class GatewayClient:
             }
 
             # Wait for the AI to complete
-            result = await asyncio.wait_for(result_future, timeout=120.0)
-            return result
-
-        except asyncio.TimeoutError:
-            logger.error("Timeout waiting for Gateway response")
-            raise
+            try:
+                return await asyncio.wait_for(result_future, timeout=REPLY_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                if self._late_result_cb is None:
+                    logger.error("Timeout waiting for Gateway response")
+                    raise
+                # Long-running task (e.g. "install updates on that host"). Keep
+                # the run handler registered — _handle_event fires the late
+                # callback when the run's completion event arrives.
+                self._response_handlers[run_id]["late"] = True
+                run_still_pending = True
+                logger.warning(
+                    f"Run {run_id} still going after {REPLY_TIMEOUT_S:.0f}s — "
+                    "will announce the reply when it lands"
+                )
+                raise ReplyPending(run_id)
         finally:
             self._response_handlers.pop(message_id, None)
-            if run_id:
+            if run_id and not run_still_pending:
                 self._response_handlers.pop(run_id, None)
 
     async def stream_message(
@@ -398,14 +429,15 @@ class GatewayClient:
                     logger.debug(f"Agent run {run_id} completed")
                     # The final text should have been accumulated
                     if run_id and run_id in self._response_handlers:
-                        handler = self._response_handlers.get(run_id)
+                        handler = self._response_handlers.pop(run_id, None)
                         if isinstance(handler, dict):
                             # We stored accumulated text in a dict
                             final_text = handler.get("text", "")
                             future = handler.get("future")
                             if future and not future.done():
                                 future.set_result(final_text)
-                            self._response_handlers.pop(run_id, None)
+                            elif handler.get("late"):
+                                self._deliver_late_result(run_id, final_text)
 
             elif stream_type == "assistant":
                 # Streaming text from assistant
@@ -438,11 +470,22 @@ class GatewayClient:
                         future = handler.get("future")
                         if future and not future.done():
                             future.set_result(text)
+                        elif handler.get("late"):
+                            self._deliver_late_result(run_id, text)
                     elif isinstance(handler, asyncio.Future) and not handler.done():
                         handler.set_result(text)
 
         else:
             logger.debug(f"Unhandled event: {event_name}")
+
+    def _deliver_late_result(self, run_id: str, text: str) -> None:
+        """Hand a post-timeout run result to the registered callback."""
+        if not text.strip():
+            logger.warning(f"Late run {run_id} finished with no text — nothing to announce")
+            return
+        if self._late_result_cb is not None:
+            # The callback speaks (slow); don't block the websocket listener.
+            asyncio.create_task(self._late_result_cb(text))
 
     async def _handle_tool_request(self, data: dict) -> None:
         """Handle tool execution requests from the Gateway."""
