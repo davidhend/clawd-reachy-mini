@@ -202,8 +202,12 @@ class GatewayClient:
                 )
                 raise ReplyPending(run_id)
         finally:
-            self._response_handlers.pop(message_id, None)
-            if run_id and not run_still_pending:
+            # OpenClaw uses the chat.send idempotencyKey as the runId, so
+            # message_id and run_id are usually the SAME key — popping
+            # message_id would destroy a still-pending run handler.
+            if not (run_still_pending and message_id == run_id):
+                self._response_handlers.pop(message_id, None)
+            if run_id and run_id != message_id and not run_still_pending:
                 self._response_handlers.pop(run_id, None)
 
     async def stream_message(

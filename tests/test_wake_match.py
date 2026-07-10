@@ -23,6 +23,17 @@ from clawd_reachy_mini.voice import match_wake_phrase
         ("um, hey gizmo, hello", "hello"),
         # Bare wake phrase -> empty remainder (service answers "Yes?"):
         ("Hey, Gizmo!", ""),
+        # Name-first address (no greeting) at utterance start:
+        ("Gizmo, go ahead and install the updates on Solbox", "go ahead and install the updates on solbox"),
+        ("Gizmo, was the dashboard refreshed?", "was the dashboard refreshed"),
+        ("Gismo what time is it", "what time is it"),
+        # Bare name -> empty remainder (service answers "Yes?"):
+        ("Gizmo", ""),
+        ("Gizmo?", ""),
+        # Name mid-sentence must NOT wake (name-first is start-anchored):
+        ("the gizmo broke again", None),
+        # Near-name at start must NOT wake (exact alias only, no fuzz):
+        ("Gizmondo, hello", None),
         # Ambient speech must NOT wake:
         ("It might be a thing...", None),
         ("There is not really a lot of them there.", None),

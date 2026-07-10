@@ -115,6 +115,12 @@ def match_wake_phrase(text: str, name: str = "gizmo") -> str | None:
     empty), or None if no wake phrase is present.
     """
     lowered = text.lower()
+    # Name-first address ("Gizmo, install the updates" / bare "Gizmo") —
+    # exact alias at utterance start ONLY, no soundex/fuzz, so ambient
+    # mid-sentence mentions of the name don't wake.
+    first = re.match(r"([a-z']+)[\s,.!?-]*", lowered)
+    if first and (first.group(1) in WAKE_NAME_ALIASES or first.group(1) == name):
+        return lowered[first.end():].strip(" ,.!?")
     # Lookahead keeps matches single-token so every adjacent word pair is
     # tested (a plain two-token pattern would consume "um, hey" and never
     # examine the "hey reachy" pair).
