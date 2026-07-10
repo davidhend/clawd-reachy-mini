@@ -61,6 +61,16 @@ STILL_WORKING_LINE = os.environ.get(
     "STILL_WORKING_LINE", "Still working on that. I'll let you know when it's done."
 )
 
+# IDENTITY.md tells the agent to answer exactly NO_REPLY to in-session speech
+# that wasn't addressed to Gizmo (ambient meeting talk forwarded during the
+# follow-up window). Lenient on separators/trailing period, nothing else.
+_NO_REPLY_RE = re.compile(r"no[_\s-]?reply\.?", re.IGNORECASE)
+
+
+def is_no_reply(text: str) -> bool:
+    """True if the agent declined to answer ambient speech."""
+    return bool(_NO_REPLY_RE.fullmatch(text.strip()))
+
 # Per-unit calibration: some units' heads lean at commanded roll 0 (e.g. one
 # test unit needed -0.12 rad to read as level). Set REACHY_ROLL_TRIM to suit.
 ROLL_TRIM = float(os.environ.get("REACHY_ROLL_TRIM", "0.0"))
@@ -501,6 +511,9 @@ class VoiceService:
         """Speak agent replies that finished after their turn stopped waiting."""
         while True:
             text = await self._late_replies.get()
+            if is_no_reply(text):
+                logger.info("🤐 Late reply was NO_REPLY — staying quiet")
+                continue
             logger.info(f'💬 Late reply: "{text[:200]}"')
             asyncio.create_task(self.daemon.antenna_ack())
             await self._speak(text)
@@ -575,6 +588,12 @@ class VoiceService:
                 except Exception:
                     pass
             await self.tracker.resume(prior_target)
+        if is_no_reply(reply):
+            # Ambient room talk the agent declined — stay quiet and do NOT
+            # extend the follow-up window, so meeting chatter dies out
+            # instead of chaining exchanges forever.
+            logger.info("🤐 Agent declined ambient speech (NO_REPLY) — staying quiet")
+            return
         self._last_exchange = time.monotonic()
         logger.info(f'💬 Reply: "{reply[:200]}"')
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from clawd_reachy_mini.voice import match_wake_phrase
+from clawd_reachy_mini.voice import is_no_reply, match_wake_phrase
 
 
 @pytest.mark.parametrize(
@@ -47,3 +47,22 @@ from clawd_reachy_mini.voice import match_wake_phrase
 )
 def test_match_wake_phrase(text, expected):
     assert match_wake_phrase(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("NO_REPLY", True),
+        ("NO_REPLY.", True),
+        ("no_reply", True),
+        ("No reply", True),
+        ("  NO_REPLY  ", True),
+        # Real answers that merely contain the words must be spoken:
+        ("No reply came back from the server.", False),
+        ("There was no reply", False),
+        ("Sure thing.", False),
+        ("", False),
+    ],
+)
+def test_is_no_reply(text, expected):
+    assert is_no_reply(text) is expected
