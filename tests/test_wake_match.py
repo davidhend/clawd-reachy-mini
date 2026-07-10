@@ -27,9 +27,11 @@ from clawd_reachy_mini.voice import is_no_reply, match_wake_phrase
         ("Gizmo, go ahead and install the updates on Solbox", "go ahead and install the updates on solbox"),
         ("Gizmo, was the dashboard refreshed?", "was the dashboard refreshed"),
         ("Gismo what time is it", "what time is it"),
-        # Bare name -> empty remainder (service answers "Yes?"):
-        ("Gizmo", ""),
-        ("Gizmo?", ""),
+        # Bare name must NOT wake — Whisper's hotword bias hallucinates
+        # "Gizmo" from room noise (use "hey gizmo" to summon with no request):
+        ("Gizmo", None),
+        ("Gizmo?", None),
+        ("Gizmo.", None),
         # Name mid-sentence must NOT wake (name-first is start-anchored):
         ("the gizmo broke again", None),
         # Near-name at start must NOT wake (exact alias only, no fuzz):
